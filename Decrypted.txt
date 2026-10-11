@@ -1,0 +1,703 @@
+-- swag-bridge-decrypt
+local _bridge = (type(getgenv) == "function" and getgenv()) or _G
+local alreadyBridged = _bridge.__SwagRelayBridge == true
+pcall(function()
+    _bridge.__SwagRelayBridge = true
+end)
+
+local HttpService = game:GetService("HttpService")
+local SITE = "https://swagfinder.net"
+local RAW_URL = SITE .. "/api/script/raw"
+
+local httpRequest =
+    (syn and syn.request)
+    or http_request
+    or request
+    or (http and http.request)
+    or nil
+
+local function httpGet(url)
+    if type(game.HttpGet) == "function" then
+        local ok, body = pcall(game.HttpGet, game, url)
+        if ok and type(body) == "string" and body ~= "" then
+            return body
+        end
+    end
+    if type(httpRequest) == "function" then
+        local ok, response = pcall(httpRequest, { Url = url, Method = "GET" })
+        if ok and type(response) == "table" then
+            return tostring(response.Body or response.body or "")
+        end
+    end
+    return nil
+end
+
+local function httpJson(method, path, payload)
+    local url = SITE .. path
+    if method == "GET" and (payload == nil) then
+        local body = httpGet(url)
+        if type(body) ~= "string" or body == "" then
+            return nil
+        end
+        local ok, decoded = pcall(HttpService.JSONDecode, HttpService, body)
+        if ok and type(decoded) == "table" then
+            return decoded
+        end
+        return nil
+    end
+    if type(httpRequest) ~= "function" then
+        return nil
+    end
+    local ok, response = pcall(httpRequest, {
+        Url = url,
+        Method = method,
+        Headers = { ["Content-Type"] = "application/json" },
+        Body = payload and HttpService:JSONEncode(payload) or "",
+    })
+    if not ok or type(response) ~= "table" then
+        return nil
+    end
+    local raw = tostring(response.Body or response.body or "")
+    local decodedOk, decoded = pcall(HttpService.JSONDecode, HttpService, raw)
+    if decodedOk and type(decoded) == "table" then
+        return decoded
+    end
+    return nil
+end
+
+local function sha256Lua(msg)
+    local k = {
+        0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,
+        0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,
+        0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,
+        0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,
+        0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,
+        0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,
+        0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,
+        0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2
+    }
+    local function rrotate(x, n)
+        return bit32.bor(bit32.rshift(x, n), bit32.lshift(x, 32 - n))
+    end
+    local bytes = { string.byte(msg, 1, #msg) }
+    local bitLen = #bytes * 8
+    table.insert(bytes, 0x80)
+    while (#bytes % 64) ~= 56 do
+        table.insert(bytes, 0)
+    end
+    for i = 7, 0, -1 do
+        table.insert(bytes, bit32.band(bit32.rshift(bitLen, i * 8), 0xff))
+    end
+    local h = { 0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19 }
+    for off = 1, #bytes, 64 do
+        local w = {}
+        for i = 0, 15 do
+            local j = off + i * 4
+            w[i] = bit32.bor(
+                bit32.lshift(bytes[j], 24),
+                bit32.lshift(bytes[j + 1], 16),
+                bit32.lshift(bytes[j + 2], 8),
+                bytes[j + 3]
+            )
+        end
+        for i = 16, 63 do
+            local s0 = bit32.bxor(rrotate(w[i - 15], 7), rrotate(w[i - 15], 18), bit32.rshift(w[i - 15], 3))
+            local s1 = bit32.bxor(rrotate(w[i - 2], 17), rrotate(w[i - 2], 19), bit32.rshift(w[i - 2], 10))
+            w[i] = bit32.band(w[i - 16] + s0 + w[i - 7] + s1, 0xffffffff)
+        end
+        local a, b, c, d, e, f, g, hh = h[1], h[2], h[3], h[4], h[5], h[6], h[7], h[8]
+        for i = 0, 63 do
+            local S1 = bit32.bxor(rrotate(e, 6), rrotate(e, 11), rrotate(e, 25))
+            local ch = bit32.bxor(bit32.band(e, f), bit32.band(bit32.bnot(e), g))
+            local t1 = bit32.band(hh + S1 + ch + k[i + 1] + w[i], 0xffffffff)
+            local S0 = bit32.bxor(rrotate(a, 2), rrotate(a, 13), rrotate(a, 22))
+            local maj = bit32.bxor(bit32.band(a, b), bit32.band(a, c), bit32.band(b, c))
+            local t2 = bit32.band(S0 + maj, 0xffffffff)
+            hh, g, f, e, d, c, b, a = g, f, e, bit32.band(d + t1, 0xffffffff), c, b, a, bit32.band(t1 + t2, 0xffffffff)
+        end
+        h[1] = bit32.band(h[1] + a, 0xffffffff)
+        h[2] = bit32.band(h[2] + b, 0xffffffff)
+        h[3] = bit32.band(h[3] + c, 0xffffffff)
+        h[4] = bit32.band(h[4] + d, 0xffffffff)
+        h[5] = bit32.band(h[5] + e, 0xffffffff)
+        h[6] = bit32.band(h[6] + f, 0xffffffff)
+        h[7] = bit32.band(h[7] + g, 0xffffffff)
+        h[8] = bit32.band(h[8] + hh, 0xffffffff)
+    end
+    return string.format("%08x%08x%08x%08x%08x%08x%08x%08x", h[1], h[2], h[3], h[4], h[5], h[6], h[7], h[8])
+end
+
+local function sha256(msg)
+    return sha256Lua(msg)
+end
+
+local PAYLOAD_SECRET = tostring(
+    _bridge.SwagFinderPayloadSecret
+        or _bridge.RELAY_PAYLOAD_SECRET
+        or "ba887f7ec6285ec5ca7027e1d82525f9"
+)
+
+local function hexToBin(hex)
+    return (tostring(hex):gsub("..", function(cc)
+        return string.char(tonumber(cc, 16) or 0)
+    end))
+end
+
+local function xorBytes(plain, nonceHex, secret)
+    secret = tostring(secret or "")
+    local nonce = hexToBin(tostring(nonceHex or ""))
+    if secret == "" or nonce == "" or plain == "" then
+        return ""
+    end
+    local sl, nl = #secret, #nonce
+    local out = {}
+    for i = 1, #plain do
+        out[i] = string.char(bit32.bxor(plain:byte(i), secret:byte(((i - 1) % sl) + 1), nonce:byte(((i - 1) % nl) + 1)))
+    end
+    return table.concat(out)
+end
+
+local function openSealed(data)
+    if type(data) ~= "table" or not data.n or not data.p then
+        return data
+    end
+    if tonumber(data.e) ~= 2 then
+        return data
+    end
+    local plain = xorBytes(hexToBin(tostring(data.p)), data.n, PAYLOAD_SECRET)
+    local ok, decoded = pcall(HttpService.JSONDecode, HttpService, plain)
+    if ok and type(decoded) == "table" and (decoded.name or decoded.brainrot) then
+        return decoded
+    end
+    return data
+end
+
+local function unwrapMessage(message)
+    if type(message) ~= "table" then
+        return message
+    end
+    if type(message.data) == "table" then
+        message.data = openSealed(message.data)
+    end
+    return message
+end
+
+local function unwrapPollBody(body)
+    if type(body) ~= "string" or body == "" then
+        return body
+    end
+    local ok, decoded = pcall(HttpService.JSONDecode, HttpService, body)
+    if not ok or type(decoded) ~= "table" then
+        return body
+    end
+    if type(decoded.messages) == "table" then
+        for _, item in ipairs(decoded.messages) do
+            unwrapMessage(item)
+        end
+    else
+        unwrapMessage(decoded)
+    end
+    local encodedOk, encoded = pcall(HttpService.JSONEncode, HttpService, decoded)
+    return encodedOk and encoded or body
+end
+
+local function isPollUrl(url)
+    return string.find(string.lower(tostring(url or "")), "/poll", 1, true) ~= nil
+end
+
+local function wrapHttpFn(original)
+    if type(original) ~= "function" then
+        return original
+    end
+    return function(opts, ...)
+        local result = original(opts, ...)
+        local url = type(opts) == "table" and (opts.Url or opts.url) or opts
+        if isPollUrl(url) then
+            if type(result) == "table" then
+                if type(result.Body) == "string" then
+                    result.Body = unwrapPollBody(result.Body)
+                end
+                if type(result.body) == "string" then
+                    result.body = unwrapPollBody(result.body)
+                end
+            elseif type(result) == "string" then
+                return unwrapPollBody(result)
+            end
+        end
+        return result
+    end
+end
+
+-- Executor tables (http, syn, WebSocket, ...) are frozen/readonly on some executors, so every
+-- write is best-effort: a failed patch is skipped instead of killing the loader. Patched state is
+-- tracked in a weak side table rather than by writing flags into those tables.
+local patchedFields = setmetatable({}, { __mode = "k" })
+
+local function isPatched(holder, key)
+    local flags = patchedFields[holder]
+    return flags ~= nil and flags[key] ~= nil
+end
+
+local function patchField(holder, key, wrap)
+    if type(holder) ~= "table" or isPatched(holder, key) then
+        return false
+    end
+    local okRead, original = pcall(function()
+        return holder[key]
+    end)
+    if not okRead or type(original) ~= "function" then
+        return false
+    end
+    local replacement = wrap(original)
+    local okWrite = pcall(function()
+        holder[key] = replacement
+    end)
+    if not okWrite then
+        return false
+    end
+    local flags = patchedFields[holder]
+    if not flags then
+        flags = {}
+        patchedFields[holder] = flags
+    end
+    flags[key] = original
+    return true
+end
+
+local function patchHttp()
+    if syn and type(syn) == "table" then
+        patchField(syn, "request", wrapHttpFn)
+    end
+    pcall(function()
+        if type(http_request) == "function" then
+            http_request = wrapHttpFn(http_request)
+        end
+    end)
+    pcall(function()
+        if type(request) == "function" then
+            request = wrapHttpFn(request)
+        end
+    end)
+    if http and type(http) == "table" then
+        patchField(http, "request", wrapHttpFn)
+    end
+    if type(hookfunction) == "function" then
+        pcall(function()
+            local oldGet = hookfunction(game.HttpGet, function(self, url, ...)
+                local body = oldGet(self, url, ...)
+                if type(body) == "string" and isPollUrl(url) then
+                    return unwrapPollBody(body)
+                end
+                return body
+            end)
+        end)
+    end
+end
+
+local function hmacSha256(secret, message)
+    local blockSize = 64
+    secret = tostring(secret or "")
+    if #secret > blockSize then
+        secret = hexToBin(sha256(secret))
+    end
+    secret = secret .. string.rep("\0", blockSize - #secret)
+    local inner = {}
+    local outer = {}
+    for i = 1, blockSize do
+        local byte = secret:byte(i)
+        inner[i] = string.char(bit32.bxor(byte, 0x36))
+        outer[i] = string.char(bit32.bxor(byte, 0x5c))
+    end
+    local innerHash = hexToBin(sha256(table.concat(inner) .. tostring(message or "")))
+    return sha256(table.concat(outer) .. innerHash)
+end
+
+local function writeKey(target, key)
+    if type(target) ~= "table" or type(key) ~= "string" or key == "" then
+        return
+    end
+    target.script_key = key
+    target.SwagFinderKey = key
+end
+
+local function resolveKey()
+    local sources = { _bridge.SwagFinderKey, _bridge.script_key, rawget(_G, "SwagFinderKey"), rawget(_G, "script_key") }
+    if type(shared) == "table" then
+        table.insert(sources, shared.script_key)
+        table.insert(sources, shared.SwagFinderKey)
+    end
+    pcall(function()
+        table.insert(sources, script_key)
+    end)
+    for _, value in ipairs(sources) do
+        if type(value) == "string" then
+            local trimmed = string.gsub(value, "^%s*(.-)%s*$", "%1")
+            if trimmed ~= "" and trimmed ~= "nil" then
+                writeKey(_bridge, trimmed)
+                writeKey(_G, trimmed)
+                if type(shared) == "table" then
+                    writeKey(shared, trimmed)
+                end
+                return trimmed
+            end
+        end
+    end
+    return ""
+end
+
+local function resignAuth(message)
+    if type(message) ~= "table" then
+        return message
+    end
+    local key = resolveKey()
+    local userId = tostring(message.robloxUserId or "")
+    local hwid = tostring(message.hwid or "")
+    if key == "" or userId == "" or #hwid < 8 then
+        return message
+    end
+    local fresh = httpJson("GET", "/api/relay/challenge")
+    if type(fresh) ~= "table" or type(fresh.nonce) ~= "string" then
+        return message
+    end
+    local timestamp = math.floor(tonumber(fresh.serverTime) or 0)
+    if timestamp < 100000 then
+        return message
+    end
+    local ok, proof = pcall(hmacSha256, key, fresh.nonce .. "|" .. userId .. "|" .. hwid .. "|" .. tostring(timestamp))
+    if not ok or type(proof) ~= "string" then
+        return message
+    end
+    message.timestamp = timestamp
+    message.proof = proof
+    message.nonce = fresh.nonce
+    message.keyId = sha256(key)
+    return message
+end
+
+local function decodeMaybe(raw)
+    if type(raw) == "table" then
+        return raw
+    end
+    if type(raw) ~= "string" or raw == "" then
+        return nil
+    end
+    local ok, decoded = pcall(HttpService.JSONDecode, HttpService, raw)
+    if ok and type(decoded) == "table" then
+        return decoded
+    end
+    return nil
+end
+
+local function sendRaw(socket, data)
+    if type(socket) ~= "table" and type(socket) ~= "userdata" then
+        return false
+    end
+    if type(socket.Send) == "function" then
+        local ok = pcall(socket.Send, socket, data)
+        if ok then
+            return true
+        end
+        return pcall(socket.Send, data)
+    end
+    if type(socket.send) == "function" then
+        local ok = pcall(socket.send, socket, data)
+        if ok then
+            return true
+        end
+        return pcall(socket.send, data)
+    end
+    return false
+end
+
+local function attachRaw(socket, onMessage, onClose)
+    local names = { "OnMessage", "onmessage", "OnMessageReceived", "onMessage", "MessageReceived" }
+    local closeNames = { "OnClose", "onclose", "OnClosed", "closed" }
+    local function hook(targetNames, callback)
+        for _, name in ipairs(targetNames) do
+            local ok, value = pcall(function()
+                return socket[name]
+            end)
+            if ok and typeof(value) == "RBXScriptSignal" then
+                if pcall(function()
+                    value:Connect(callback)
+                end) then
+                    return true
+                end
+            end
+            if ok and type(value) == "table" and type(value.Connect) == "function" then
+                if pcall(function()
+                    value:Connect(callback)
+                end) then
+                    return true
+                end
+            end
+            if ok and type(value) == "function" then
+                if pcall(value, callback) or pcall(value, socket, callback) then
+                    return true
+                end
+            end
+            pcall(function()
+                socket[name] = callback
+            end)
+        end
+        return false
+    end
+    hook(names, onMessage)
+    hook(closeNames, onClose)
+end
+
+local function wrapSocket(raw, url)
+    if raw == nil then
+        return raw
+    end
+    local listeners = {}
+    local closedListeners = {}
+    local queued = {}
+    local closed = false
+    local httpSession = nil
+    local lastSeq = 0
+    local gotInbound = false
+    local wsAuthenticated = false
+    local lastInbound = os.clock()
+    local host = string.lower(tostring(url or ""))
+    local usaSocket = host == "" or string.find(host, "swagfinder.net", 1, true) ~= nil
+
+    local function fireClose(...)
+        if closed then
+            return
+        end
+        closed = true
+        for _, listener in ipairs(closedListeners) do
+            pcall(listener, ...)
+        end
+        pcall(function()
+            if type(raw.Close) == "function" then
+                raw:Close()
+            elseif type(raw.close) == "function" then
+                raw:close()
+            end
+        end)
+    end
+
+    local function emit(payload)
+        if payload == nil then
+            return
+        end
+        lastInbound = os.clock()
+        local original = payload
+        local decoded = type(payload) == "string" and decodeMaybe(payload) or payload
+        if type(decoded) == "table" then
+            if decoded.type == "auth_ok" then
+                wsAuthenticated = true
+            elseif decoded.type == "auth_error" then
+                wsAuthenticated = false
+            end
+        end
+        local encoded = original
+        if type(original) ~= "string" then
+            if type(decoded) == "table" then
+                decoded = unwrapMessage(decoded)
+            end
+            local ok, json = pcall(HttpService.JSONEncode, HttpService, decoded)
+            if not ok then
+                return
+            end
+            encoded = json
+        end
+        if #listeners == 0 then
+            table.insert(queued, encoded)
+            return
+        end
+        for _, listener in ipairs(listeners) do
+            pcall(listener, encoded)
+        end
+    end
+
+    local function addListener(callback)
+        if type(callback) ~= "function" then
+            return
+        end
+        table.insert(listeners, callback)
+        if #queued > 0 then
+            local pending = queued
+            queued = {}
+            for _, item in ipairs(pending) do
+                pcall(callback, item)
+            end
+        end
+    end
+
+    attachRaw(raw, function(...)
+        gotInbound = true
+        lastInbound = os.clock()
+        for i = 1, select("#", ...) do
+            local value = select(i, ...)
+            if value ~= nil and value ~= raw then
+                emit(value)
+            end
+        end
+    end, function(...)
+        fireClose(...)
+    end)
+
+    task.spawn(function()
+        task.wait(0.35)
+        if gotInbound or closed or not usaSocket then
+            return
+        end
+        local challenge = httpJson("GET", "/api/relay/challenge")
+        if type(challenge) == "table" and challenge.nonce then
+            emit(challenge)
+        end
+    end)
+
+    local function handleOutgoing(data)
+        local message = decodeMaybe(data)
+        -- The joiner signs the challenge from the relay it is connected to. Do not replace
+        -- that proof with a challenge fetched from the USA shop: regional relays keep nonce
+        -- state locally, so a USA nonce makes Germany/Spain/etc. websocket auth fail.
+        sendRaw(raw, data)
+        if type(message) ~= "table" then
+            return
+        end
+        if message.type == "hello" or message.type == "challenge_request" or message.type == "ping" then
+            if not gotInbound and usaSocket then
+                local challenge = httpJson("GET", "/api/relay/challenge")
+                if type(challenge) == "table" and challenge.nonce then
+                    emit(challenge)
+                end
+            end
+            return
+        end
+        if message.type == "auth" and message.role == "receiver" then return end
+        if message.type == "heartbeat" and type(message.session) == "string" then
+            httpSession = message.session
+        end
+    end
+
+    local messageSignal = {}
+    function messageSignal:Connect(callback)
+        addListener(callback)
+        return {
+            Disconnect = function() end,
+        }
+    end
+    setmetatable(messageSignal, {
+        __call = function(_, callback)
+            addListener(callback)
+        end,
+    })
+
+    local closeSignal = {}
+    function closeSignal:Connect(callback)
+        if type(callback) == "function" then
+            table.insert(closedListeners, callback)
+        end
+        return {
+            Disconnect = function() end,
+        }
+    end
+
+    local fake = {}
+    local function sendFn(_, data)
+        handleOutgoing(data)
+    end
+    fake.Send = sendFn
+    fake.send = sendFn
+    fake.Close = function()
+        fireClose()
+    end
+    fake.close = fake.Close
+    fake.OnMessage = messageSignal
+    fake.onmessage = messageSignal
+    fake.OnMessageReceived = messageSignal
+    fake.onMessage = messageSignal
+    fake.OnClose = closeSignal
+    fake.onclose = closeSignal
+
+    return setmetatable(fake, {
+        __index = function(_, key)
+            local ok, value = pcall(function()
+                return raw[key]
+            end)
+            if ok then
+                return value
+            end
+            return nil
+        end,
+        __newindex = function(_, key, value)
+            local lowered = string.lower(tostring(key))
+            if lowered == "onmessage" or lowered == "onmessagereceived" or lowered == "messagereceived" then
+                addListener(value)
+                return
+            end
+            if lowered == "onclose" or lowered == "onclosed" then
+                if type(value) == "function" then
+                    table.insert(closedListeners, value)
+                end
+                return
+            end
+            pcall(function()
+                raw[key] = value
+            end)
+        end,
+    })
+end
+
+local function patchConnect(holder, key)
+    patchField(holder, key, function(original)
+        return function(...)
+            local results = { original(...) }
+            if results[1] ~= nil then
+                results[1] = wrapSocket(results[1], (...))
+            end
+            return table.unpack(results)
+        end
+    end)
+end
+
+local function patchAll()
+    patchConnect(WebSocket, "connect")
+    patchConnect(WebSocket, "Connect")
+    if syn and type(syn) == "table" then
+        patchConnect(syn.websocket, "connect")
+        patchConnect(syn.websocket, "Connect")
+    end
+    if Krnl and type(Krnl) == "table" then
+        patchConnect(Krnl.WebSocket, "connect")
+        patchConnect(Krnl.WebSocket, "Connect")
+    end
+    patchConnect(websocket, "connect")
+    patchConnect(websocket, "Connect")
+    if type(_bridge.WebSocket) == "table" then
+        patchConnect(_bridge.WebSocket, "connect")
+        patchConnect(_bridge.WebSocket, "Connect")
+    end
+end
+
+if not alreadyBridged then
+    -- Never let a patch failure stop the script from loading; the joiner decodes payloads itself.
+    pcall(patchHttp)
+    pcall(patchAll)
+end
+
+local rawSource = httpGet(RAW_URL)
+if type(rawSource) ~= "string" or rawSource == "" then
+    error("Swag Finder failed to load script")
+end
+local boundKey = resolveKey()
+if boundKey ~= "" then
+    rawSource = string.format(
+        "getgenv().script_key=%q;getgenv().SwagFinderKey=%q;script_key=%q;SwagFinderKey=%q;",
+        boundKey,
+        boundKey,
+        boundKey,
+        boundKey
+    ) .. rawSource
+end
+local loader = loadstring or load
+local compiled, compileError = loader(rawSource)
+if not compiled then
+    error(compileError or "Swag Finder failed to compile script")
+end
+compiled()
